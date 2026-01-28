@@ -3,10 +3,17 @@ from datetime import datetime, time
 import os
 import shutil
 import glob
+import unicodedata
+import re
 from colorama import init, Fore, Style
 
 # Inicializar colorama
 init(autoreset=True)
+
+def remover_acentos(texto):
+    """Remove acentos de um texto"""
+    nfd = unicodedata.normalize('NFD', texto)
+    return ''.join(char for char in nfd if unicodedata.category(char) != 'Mn')
 
 def limpar_tela():
     os.system('cls' if os.name == 'nt' else 'clear')
@@ -19,9 +26,75 @@ def encontrar_arquivo_escala():
     return None
 
 # Function to create the report
-def create_report(plano_do_dia, responsavel):
+def create_report(plano_do_dia, responsavel, aguardando_mdf, aguardando_faturamento):
     # Read the Excel file
     try:
+        print(f"{Fore.YELLOW}⏳ Lendo arquivo COLE_AQUI.txt...{Style.RESET_ALL}")
+        pavao_content = ""
+        pendencias_content = ""
+        
+        # Tentar ler o arquivo COLE_AQUI.txt
+        try:
+            with open('2.ULTIMO-REPORT/COLE_AQUI.txt', 'r', encoding='utf-8') as file:
+                conteudo = file.read()
+                conteudo_sem_acentos = remover_acentos(conteudo.upper())
+                
+                # Extrair conteúdo de PAVÃO: (com ou sem acento)
+                palavras_pavao = ['PAVÃO:', 'PAVAO:']
+                for palavra in palavras_pavao:
+                    palavra_busca = remover_acentos(palavra.upper())
+                    if palavra_busca in conteudo_sem_acentos:
+                        # Encontrar a posição no texto original
+                        for i, match in enumerate(re.finditer(re.escape(palavra_busca), conteudo_sem_acentos)):
+                            inicio_pavao = match.start() + len(palavra_busca)
+                            # Procurar próxima seção
+                            palavras_proxima = ['PENDÊNCIAS:', 'PENDENCIAS:']
+                            proximo_indice = -1
+                            for prox_palavra in palavras_proxima:
+                                prox_busca = remover_acentos(prox_palavra.upper())
+                                match_prox = re.search(re.escape(prox_busca), conteudo_sem_acentos[inicio_pavao:])
+                                if match_prox:
+                                    proximo_indice = inicio_pavao + match_prox.start()
+                                    break
+                            
+                            if proximo_indice != -1:
+                                pavao_content = conteudo[inicio_pavao:proximo_indice].strip().upper()
+                            else:
+                                pavao_content = conteudo[inicio_pavao:].strip().upper()
+                            break
+                        if pavao_content:
+                            break
+                
+                # Extrair conteúdo de PENDÊNCIAS: (com ou sem acento)
+                palavras_pendencias = ['PENDÊNCIAS:', 'PENDENCIAS:']
+                for palavra in palavras_pendencias:
+                    palavra_busca = remover_acentos(palavra.upper())
+                    if palavra_busca in conteudo_sem_acentos:
+                        # Encontrar a posição no texto original
+                        for i, match in enumerate(re.finditer(re.escape(palavra_busca), conteudo_sem_acentos)):
+                            inicio_pendencias = match.start() + len(palavra_busca)
+                            # Procurar próxima seção
+                            palavras_proxima = ['TROCA DE CAVALO:', 'TROCA DE CAVALO:']
+                            proximo_indice = -1
+                            for prox_palavra in palavras_proxima:
+                                prox_busca = remover_acentos(prox_palavra.upper())
+                                match_prox = re.search(re.escape(prox_busca), conteudo_sem_acentos[inicio_pendencias:])
+                                if match_prox:
+                                    proximo_indice = inicio_pendencias + match_prox.start()
+                                    break
+                            
+                            if proximo_indice != -1:
+                                pendencias_content = conteudo[inicio_pendencias:proximo_indice].strip().upper()
+                            else:
+                                pendencias_content = conteudo[inicio_pendencias:].strip().upper()
+                            break
+                        if pendencias_content:
+                            break
+                
+                print(f"{Fore.CYAN}✓ Arquivo COLE_AQUI.txt lido com sucesso{Style.RESET_ALL}")
+        except FileNotFoundError:
+            print(f"{Fore.YELLOW}⚠ Arquivo COLE_AQUI.txt não encontrado, usando campos vazios{Style.RESET_ALL}")
+        
         print(f"{Fore.YELLOW}⏳ Procurando planilha de escalas...{Style.RESET_ALL}")
         arquivo_escala = encontrar_arquivo_escala()
         
@@ -42,6 +115,8 @@ def create_report(plano_do_dia, responsavel):
         
         # Analisar colunas VIAGEM e ESCALA para contar enviados
         enviados = 0
+        pavao_count = 0
+        checkout_count = 0
         
         # Encontrar todas as colunas que contém "VIAGEM"
         colunas_viagem = [col for col in df.columns if 'VIAGEM' in str(col).upper()]
@@ -62,6 +137,12 @@ def create_report(plano_do_dia, responsavel):
             print()
             
             for index, row in df.iterrows():
+                # Contar "OK" na coluna VIAGEM (maiúsculo ou minúsculo)
+                for col_viagem in colunas_viagem:
+                    viagem = str(row[col_viagem]).strip().upper()
+                    if viagem == 'OK':
+                        pavao_count += 1
+                
                 # Verificar se alguma das colunas VIAGEM tem "V"
                 tem_v = False
                 for col_viagem in colunas_viagem:
@@ -103,7 +184,8 @@ def create_report(plano_do_dia, responsavel):
                             enviados += 1
                             print(f"{Fore.GREEN}  ✓ Linha {index+2}: V com hora {hora} - CONTADO{Style.RESET_ALL}")
                         else:
-                            print(f"{Fore.YELLOW}  ⚠ Linha {index+2}: V com hora {hora} - FORA DO HORÁRIO (00:00-05:20){Style.RESET_ALL}")
+                            checkout_count += 1
+                            print(f"{Fore.YELLOW}  ⚠ Linha {index+2}: V com hora {hora} - FORA DO HORÁRIO (00:00-05:20) - CHECKOUT{Style.RESET_ALL}")
                     except Exception as ex:
                         # Se não conseguir processar a hora, ignora essa linha
                         print(f"{Fore.YELLOW}  ⚠ Linha {index+2}: Erro ao processar - {ex} | ESCALA={repr(escala)}{Style.RESET_ALL}")
@@ -124,23 +206,28 @@ def create_report(plano_do_dia, responsavel):
 
     # Prepare the report content
     data_atual = datetime.now().strftime('%d/%m')
+    
+    # Adicionar linha PAVAO apenas se existir pelo menos um registro
+    pavao_line = f"PAVAO: {pavao_count}\n" if pavao_count > 0 else ""
+    
     report_content = f"""REPORT OPERAÇÃO P2 {data_atual} - {responsavel}
 
 PLANO DO DIA: {plano_do_dia}
 
 ENVIADAS: {enviados}
+{pavao_line}
 
 
-
-AGUARDANDO MDF: 
-AGUARDANDO FATURAMENTO: 
-AGUARDANDO CHECKOUT: 
+AGUARDANDO MDF: {aguardando_mdf}
+AGUARDANDO FATURAMENTO: {aguardando_faturamento}
+AGUARDANDO CHECKOUT: {checkout_count}
 
 PAVÃO:
-
+{pavao_content}
 
 
 PENDÊNCIAS:
+{pendencias_content}
 
 
 
@@ -196,8 +283,10 @@ if __name__ == '__main__':
     print(f"{Fore.CYAN}{Style.BRIGHT}    GERADOR DE RELATÓRIO - OPERAÇÃO P2{Style.RESET_ALL}")
     print(f"{Fore.CYAN}{'='*60}{Style.RESET_ALL}\n")
     
-    plano_do_dia = input(f"{Fore.YELLOW}📋 Qual o plano do dia? {Fore.WHITE}» {Style.RESET_ALL}")
-    responsavel = input(f"{Fore.YELLOW}👤 Quem é o responsável? {Fore.WHITE}» {Style.RESET_ALL}")
+    plano_do_dia = input(f"{Fore.YELLOW}📋 Qual o plano do dia? {Fore.WHITE}» {Style.RESET_ALL}").upper()
+    responsavel = input(f"{Fore.YELLOW}👤 Quem é o responsável? {Fore.WHITE}» {Style.RESET_ALL}").upper()
+    aguardando_mdf = input(f"{Fore.YELLOW}📦 Quantas estão aguardando MDF? {Fore.WHITE}» {Style.RESET_ALL}").upper()
+    aguardando_faturamento = input(f"{Fore.YELLOW}💳 Quantas estão aguardando FATURAMENTO? {Fore.WHITE}» {Style.RESET_ALL}").upper()
     
     print(f"\n{Fore.CYAN}{'─'*60}{Style.RESET_ALL}\n")
-    create_report(plano_do_dia, responsavel)
+    create_report(plano_do_dia, responsavel, aguardando_mdf, aguardando_faturamento)
