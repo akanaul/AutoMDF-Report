@@ -4,16 +4,18 @@ __pycache__/
 *.pyc
 *.pyo
 
+# Pasta de escalas (mantém a pasta, ignora o conteúdo)
+1.ESCALA-FIM-TURNO/*
+!1.ESCALA-FIM-TURNO/.gitkeep
+
+# Pasta de relatório anterior (mantém a pasta, ignora o conteúdo)
+2.ULTIMO-REPORT/*
+!2.ULTIMO-REPORT/.gitkeep
+
 # Arquivos de histórico (mantém as pastas, ignora o conteúdo)
 3.HISTORICO-REPORT/*
 !3.HISTORICO-REPORT/.gitkeep
 4.HISTORICO-ESCALA/*
 !4.HISTORICO-ESCALA/.gitkeep
-
-# Último relatório gerado
-ULTIMO_RELATORIO.txt
-NOVO_RELATORIO.txt
-
-# Arquivos temporários
 *.tmp
 *.log
