@@ -1,0 +1,19 @@
+# Ambiente virtual Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# Arquivos de histórico (mantém as pastas, ignora o conteúdo)
+3.HISTORICO-REPORT/*
+!3.HISTORICO-REPORT/.gitkeep
+4.HISTORICO-ESCALA/*
+!4.HISTORICO-ESCALA/.gitkeep
+
+# Último relatório gerado
+ULTIMO_RELATORIO.txt
+NOVO_RELATORIO.txt
+
+# Arquivos temporários
+*.tmp
+*.log
