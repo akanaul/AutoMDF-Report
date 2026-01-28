@@ -217,19 +217,17 @@ PLANO DO DIA: {plano_do_dia}
 ENVIADAS: {enviados}
 {pavao_line}
 
-
 AGUARDANDO MDF: {aguardando_mdf}
 AGUARDANDO FATURAMENTO: {aguardando_faturamento}
 AGUARDANDO CHECKOUT: {checkout_count}
 
 PAVÃO:
+
 {pavao_content}
 
-
 PENDÊNCIAS:
+
 {pendencias_content}
-
-
 
 TROCA DE CAVALO:
 
@@ -241,7 +239,6 @@ SAÍDA ITU x SOROCABA:
 ENTRADA SOROCABA x ITU: 
 
 MOTORISTA EM ATRASO:
-
 
 """
 
