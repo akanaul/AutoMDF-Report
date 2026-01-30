@@ -162,7 +162,7 @@ def processar_pavao_com_destino(pavao_content, df, coluna_destino, pavao_count_f
     # Comparar com o pavao_count_feito (OK contados), não com o total no report anterior
     aviso = ""
     if pavao_count_feito != len(placas_removidas):
-        aviso = f"\n⚠️  [AVISO] PAVÃO: {pavao_count_feito} PAVÕES foram feitos (OK), mas apenas {len(placas_removidas)} foram encontrados em DESTINO. {pavao_count_feito - len(placas_removidas)} ainda precisam ser removidas manualmente."
+        aviso = f"\n⚠️  [AVISO] PAVÃO: {str(pavao_count_feito).zfill(2)} PAVÕES foram feitos (OK), mas apenas {str(len(placas_removidas)).zfill(2)} foram encontrados em DESTINO. {str(pavao_count_feito - len(placas_removidas)).zfill(2)} ainda precisam ser removidas manualmente."
     
     return pavao_atualizado, placas_removidas, aviso
 
@@ -493,7 +493,7 @@ def create_report(plano_do_dia, responsavel, aguardando_mdf, aguardando_faturame
                 print(f"{Fore.RED}  Coluna ESCALA não existe{Style.RESET_ALL}")
         
         print(f"{Fore.GREEN}✓ Planilha carregada com sucesso!{Style.RESET_ALL}")
-        print(f"{Fore.CYAN}📦 Enviados encontrados: {enviados}{Style.RESET_ALL}")
+        print(f"{Fore.CYAN}📦 Enviados encontrados: {str(enviados).zfill(2)}{Style.RESET_ALL}")
     except Exception as e:
         print(f"{Fore.RED}✗ Erro ao ler planilha: {e}{Style.RESET_ALL}")
         return
@@ -514,7 +514,7 @@ def create_report(plano_do_dia, responsavel, aguardando_mdf, aguardando_faturame
     if coluna_destino:
         pavao_content_processado, placas_removidas, aviso_pavao = processar_pavao_com_destino(pavao_content, df, coluna_destino, pavao_count)
         if placas_removidas:
-            print(f"{Fore.CYAN}ℹ Removidas {len(placas_removidas)} placa(s) do PAVÃO que foram encontradas em DESTINO{Style.RESET_ALL}")
+            print(f"{Fore.CYAN}ℹ Removidas {str(len(placas_removidas)).zfill(2)} placa(s) do PAVÃO que foram encontradas em DESTINO{Style.RESET_ALL}")
             for placa in placas_removidas:
                 print(f"  - {placa}")
         if aviso_pavao:
@@ -523,18 +523,18 @@ def create_report(plano_do_dia, responsavel, aguardando_mdf, aguardando_faturame
         pavao_content_processado = pavao_content
     
     # Adicionar linha PAVAO apenas se existir pelo menos um registro
-    pavao_line = f"PAVAO: {pavao_count}\n" if pavao_count > 0 else ""
+    pavao_line = f"PAVAO: {str(pavao_count).zfill(2)}\n" if pavao_count > 0 else ""
     
     report_content = f"""REPORT OPERAÇÃO P2 {data_atual} - {responsavel}
 
 PLANO DO DIA: {plano_do_dia}
 
-ENVIADAS: {enviados}
+ENVIADAS: {str(enviados).zfill(2)}
 {pavao_line}
 
 AGUARDANDO MDF: {aguardando_mdf}
 AGUARDANDO FATURAMENTO: {aguardando_faturamento}
-AGUARDANDO CHECKOUT: {checkout_count}
+AGUARDANDO CHECKOUT: {str(checkout_count).zfill(2)}
 
 PAVÃO:
 
