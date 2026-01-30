@@ -7,6 +7,12 @@ import unicodedata
 import re
 from colorama import init, Fore, Style
 
+try:
+    from openpyxl import load_workbook
+    OPENPYXL_AVAILABLE = True
+except ImportError:
+    OPENPYXL_AVAILABLE = False
+
 # Inicializar colorama
 init(autoreset=True)
 
@@ -24,6 +30,59 @@ def encontrar_arquivo_escala():
     if arquivos:
         return arquivos[0]
     return None
+
+def obter_linhas_com_valores_reais(arquivo_excel, nome_coluna_frota):
+    """
+    Retorna índices das linhas que têm valores reais (não fórmulas) na coluna FROTA
+    """
+    linhas_reais = set()
+    debug_info = []
+    
+    if not OPENPYXL_AVAILABLE:
+        # Se openpyxl não está disponível, retorna todas as linhas (fallback)
+        return None
+    
+    try:
+        wb = load_workbook(arquivo_excel)
+        ws = wb.active
+        
+        # Encontrar o índice da coluna FROTA
+        coluna_frota_idx = None
+        for cell in ws[1]:
+            if cell.value and str(cell.value).strip().upper() == nome_coluna_frota.upper():
+                coluna_frota_idx = cell.column
+                break
+        
+        if coluna_frota_idx is None:
+            print(f"{Fore.YELLOW}⚠ Coluna {nome_coluna_frota} não encontrada no header{Style.RESET_ALL}")
+            return None
+        
+        print(f"{Fore.CYAN}🔍 Detectando valores reais em FROTA (coluna índice {coluna_frota_idx})...{Style.RESET_ALL}")
+        
+        # Iterar pelas linhas e verificar se a célula tem fórmula
+        for row_num, row in enumerate(ws.iter_rows(min_row=2, max_row=ws.max_row), start=2):
+            cell = row[coluna_frota_idx - 1]
+            # Se a célula não começa com "=" (não é fórmula) e tem valor
+            if cell.value and not str(cell.value).startswith('='):
+                linhas_reais.add(row_num)
+                debug_info.append(f"Linha {row_num}: FROTA={cell.value}")
+        
+        # Mostrar debug info das primeiras 5 linhas encontradas
+        if debug_info:
+            print(f"{Fore.CYAN}📊 Valores reais encontrados:{Style.RESET_ALL}")
+            for info in debug_info[:10]:
+                print(f"  {info}")
+            if len(debug_info) > 10:
+                print(f"  ... e mais {len(debug_info) - 10}")
+        
+        wb.close()
+        return linhas_reais if linhas_reais else None
+        
+    except Exception as e:
+        print(f"{Fore.YELLOW}⚠ Erro ao detectar fórmulas: {e}{Style.RESET_ALL}")
+        import traceback
+        traceback.print_exc()
+        return None
 
 # Function to create the report
 def create_report(plano_do_dia, responsavel, aguardando_mdf, aguardando_faturamento):
@@ -117,12 +176,52 @@ def create_report(plano_do_dia, responsavel, aguardando_mdf, aguardando_faturame
         enviados = 0
         pavao_count = 0
         checkout_count = 0
+        saida_itu_dhl = 0
+        troca_cavalo_content = ""
         
         # Encontrar todas as colunas que contém "VIAGEM"
         colunas_viagem = [col for col in df.columns if 'VIAGEM' in str(col).upper()]
         
+        # Encontrar coluna FROTA e MOTORISTA para TROCA DE CAVALO
+        coluna_frota = None
+        coluna_motorista = None
+        for col in df.columns:
+            if 'FROTA' in str(col).upper():
+                coluna_frota = col
+            if 'MOTORISTA' in str(col).upper():
+                coluna_motorista = col
+        
         print(f"{Fore.CYAN}📋 Total de colunas encontradas: {len(df.columns)}{Style.RESET_ALL}")
         print(f"{Fore.CYAN}📋 Colunas de viagem: {colunas_viagem}{Style.RESET_ALL}")
+        print(f"{Fore.CYAN}📋 Coluna FROTA: {coluna_frota}{Style.RESET_ALL}")
+        print(f"{Fore.CYAN}📋 Coluna MOTORISTA: {coluna_motorista}{Style.RESET_ALL}")
+        
+        # Obter linhas com valores reais (não fórmulas) na coluna FROTA
+        linhas_frota_reais = None
+        if coluna_frota:
+            print(f"{Fore.CYAN}[DEBUG] Chamando obter_linhas_com_valores_reais para coluna: {coluna_frota}{Style.RESET_ALL}")
+            linhas_frota_reais = obter_linhas_com_valores_reais(arquivo_escala, coluna_frota)
+            print(f"{Fore.CYAN}[DEBUG] Resultado de obter_linhas_com_valores_reais: {linhas_frota_reais}{Style.RESET_ALL}")
+            if linhas_frota_reais:
+                print(f"{Fore.CYAN}📦 Encontradas {len(linhas_frota_reais)} linhas com valores reais em FROTA{Style.RESET_ALL}")
+        
+        # Coletar dados de TROCA DE CAVALO ANTES do loop de viagens
+        for index, row in df.iterrows():
+            # Coletar dados de TROCA DE CAVALO (valores que não são fórmulas)
+            if coluna_frota and coluna_motorista and linhas_frota_reais is not None:
+                # Usar o índice da linha (index é baseado em 0, mas as linhas reais estão baseadas em 1 do Excel)
+                linha_excel = index + 2  # +2 porque Excel começa em 1 e pula o header
+                
+                if linha_excel in linhas_frota_reais:
+                    frota_val = row[coluna_frota]
+                    motorista_val = row[coluna_motorista]
+                    
+                    frota_str = str(frota_val).strip() if pd.notna(frota_val) else ""
+                    motorista_str = str(motorista_val).strip() if pd.notna(motorista_val) else ""
+                    
+                    if motorista_str and motorista_str != 'nan' and frota_str and frota_str != 'nan':
+                        troca_cavalo_content += f"{motorista_str} - {frota_str}\n"
+                        print(f"{Fore.GREEN}  ✓ TROCA DE CAVALO: {motorista_str} - {frota_str}{Style.RESET_ALL}")
         
         if colunas_viagem and 'ESCALA' in df.columns:
             print(f"{Fore.YELLOW}⏳ Analisando viagens...{Style.RESET_ALL}")
@@ -190,6 +289,51 @@ def create_report(plano_do_dia, responsavel, aguardando_mdf, aguardando_faturame
                         # Se não conseguir processar a hora, ignora essa linha
                         print(f"{Fore.YELLOW}  ⚠ Linha {index+2}: Erro ao processar - {ex} | ESCALA={repr(escala)}{Style.RESET_ALL}")
                         continue
+                
+                # Verificar se alguma das colunas VIAGEM tem "SC"
+                tem_sc = False
+                for col_viagem in colunas_viagem:
+                    viagem = str(row[col_viagem]).strip().upper()
+                    if viagem == 'SC':
+                        tem_sc = True
+                        break
+                
+                if tem_sc:
+                    escala = row['ESCALA']
+                    # Tentar extrair hora do campo ESCALA
+                    try:
+                        if isinstance(escala, datetime):
+                            hora = escala.time()
+                        elif isinstance(escala, time):
+                            hora = escala
+                        elif isinstance(escala, str):
+                            # Tentar parsear string no formato "00:00" ou "00:00:00"
+                            escala_limpa = escala.strip()
+                            hora_partes = escala_limpa.split(':')
+                            
+                            if len(hora_partes) >= 2:
+                                horas = int(hora_partes[0])
+                                minutos = int(hora_partes[1])
+                                hora = time(horas, minutos)
+                            else:
+                                print(f"{Fore.YELLOW}  ⚠ Linha {index+2}: SC encontrado mas formato de hora inválido: {repr(escala)}{Style.RESET_ALL}")
+                                continue
+                        elif pd.isna(escala):
+                            # Campo vazio/NaN - pula
+                            print(f"{Fore.YELLOW}  ⚠ Linha {index+2}: SC encontrado mas ESCALA vazia{Style.RESET_ALL}")
+                            continue
+                        else:
+                            print(f"{Fore.YELLOW}  ⚠ Linha {index+2}: SC encontrado mas tipo de ESCALA desconhecido: {type(escala)} = {repr(escala)}{Style.RESET_ALL}")
+                            continue
+                        
+                        # Verificar se está entre 00:00 e 05:20
+                        if hora >= datetime.strptime('00:00', '%H:%M').time() and hora <= datetime.strptime('05:20', '%H:%M').time():
+                            saida_itu_dhl += 1
+                            print(f"{Fore.GREEN}  ✓ Linha {index+2}: SC com hora {hora} - SAÍDA ITU X DHL{Style.RESET_ALL}")
+                    except Exception as ex:
+                        # Se não conseguir processar a hora, ignora essa linha
+                        print(f"{Fore.YELLOW}  ⚠ Linha {index+2}: Erro ao processar SC - {ex} | ESCALA={repr(escala)}{Style.RESET_ALL}")
+                        continue
             
         else:
             print(f"{Fore.RED}✗ Colunas necessárias não encontradas!{Style.RESET_ALL}")
@@ -231,10 +375,12 @@ PENDÊNCIAS:
 
 TROCA DE CAVALO:
 
+{troca_cavalo_content}
+
 MOVIMENTAÇÕES SÓ CAVALO:
 
 ENTRADA DHL X ITU: 
-SAÍDA ITU X DHL: 
+SAÍDA ITU X DHL: {saida_itu_dhl}
 SAÍDA ITU x SOROCABA: 
 ENTRADA SOROCABA x ITU: 
 
@@ -264,7 +410,7 @@ MOTORISTA EM ATRASO:
         shutil.copy2(arquivo_escala, arquivo_escala_destino)
         print(f"{Fore.GREEN}✓ Escala copiada para histórico{Style.RESET_ALL}")
     except Exception as e:
-        print(f"{Fore.YELLOW}⚠ Aviso ao copiar escala: {e}{Style.RESET_ALL}")
+        print(f"{Fore.YELLOW}[AVISO] Aviso ao copiar escala: {e}{Style.RESET_ALL}")
     
     print(f"\n{Fore.GREEN}{'='*60}{Style.RESET_ALL}")
     print(f"{Fore.GREEN}✓ RELATÓRIO CRIADO COM SUCESSO!{Style.RESET_ALL}")
