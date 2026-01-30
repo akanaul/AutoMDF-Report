@@ -21,6 +21,79 @@ def remover_acentos(texto):
     nfd = unicodedata.normalize('NFD', texto)
     return ''.join(char for char in nfd if unicodedata.category(char) != 'Mn')
 
+def extrair_motoristas_atraso(arquivo_excel, coluna_motorista, coluna_apresenta, coluna_escala):
+    """
+    Extrai motoristas em atraso que possuem ANOTAÇÕES (comentários do Excel) na coluna APRESENTA
+    Retorna string formatada: MOTORISTA - ESCALA: HH:MM - ANOTAÇÃO
+    """
+    motoristas_atraso = ""
+    
+    if not OPENPYXL_AVAILABLE:
+        return motoristas_atraso
+    
+    try:
+        wb = load_workbook(arquivo_excel)
+        ws = wb.active
+        
+        # Encontrar índices das colunas
+        col_motorista_idx = None
+        col_apresenta_idx = None
+        col_escala_idx = None
+        
+        for cell in ws[1]:
+            if cell.value:
+                if 'MOTORISTA' in str(cell.value).upper():
+                    col_motorista_idx = cell.column
+                if 'APRESENTA' in str(cell.value).upper():
+                    col_apresenta_idx = cell.column
+                if 'ESCALA' in str(cell.value).upper():
+                    col_escala_idx = cell.column
+        
+        if not col_apresenta_idx or not col_motorista_idx or not col_escala_idx:
+            wb.close()
+            return motoristas_atraso
+        
+        # Iterar pelas linhas procurando por comentários em APRESENTA
+        for row_num in range(2, ws.max_row + 1):
+            cell_apresenta = ws.cell(row=row_num, column=col_apresenta_idx)
+            
+            # Verificar se a célula tem comentário/anotação
+            if cell_apresenta.comment:
+                anotacao_texto = cell_apresenta.comment.text
+                
+                # Obter dados da mesma linha
+                cell_motorista = ws.cell(row=row_num, column=col_motorista_idx)
+                cell_escala = ws.cell(row=row_num, column=col_escala_idx)
+                
+                motorista_val = cell_motorista.value
+                escala_val = cell_escala.value
+                
+                if motorista_val and anotacao_texto:
+                    motorista_str = str(motorista_val).strip()
+                    anotacao_str = str(anotacao_texto).strip()
+                    
+                    # Extrair apenas o corpo da anotação (após os :)
+                    if ':' in anotacao_str:
+                        anotacao_str = anotacao_str.split(':', 1)[1].strip()
+                    
+                    # Formatar escala
+                    if isinstance(escala_val, datetime):
+                        escala_str = escala_val.strftime('%H:%M')
+                    elif isinstance(escala_val, time):
+                        escala_str = escala_val.strftime('%H:%M')
+                    else:
+                        escala_str = str(escala_val).strip() if escala_val else ""
+                    
+                    motoristas_atraso += f"{motorista_str} - ESCALA: {escala_str} - {anotacao_str}\n"
+        
+        wb.close()
+        
+    except Exception as e:
+        print(f"{Fore.YELLOW}⚠ Erro ao extrair motoristas em atraso: {e}{Style.RESET_ALL}")
+    
+    return motoristas_atraso
+
+
 def extrair_placas_de_pavao(texto_pavao):
     """
     Extrai placas do texto de PAVÃO
@@ -42,10 +115,11 @@ def extrair_placas_de_pavao(texto_pavao):
     
     return placas
 
-def processar_pavao_com_destino(pavao_content, df, coluna_destino):
+def processar_pavao_com_destino(pavao_content, df, coluna_destino, pavao_count_feito):
     """
     Remove linhas de PAVÃO que existem em DESTINO
     Extrai exatamente 6 caracteres após "PLACA: "
+    Compara com o pavao_count_feito (número de OK contados)
     Retorna: (conteúdo atualizado, lista de placas removidas, aviso se houver discrepâncias)
     """
     if not pavao_content or coluna_destino not in df.columns:
@@ -53,8 +127,8 @@ def processar_pavao_com_destino(pavao_content, df, coluna_destino):
     
     # Extrair placas do PAVÃO (somente linhas com "PLACA:")
     placas_pavao = extrair_placas_de_pavao(pavao_content)
-    total_pavao = len(placas_pavao)
-    if total_pavao == 0:
+    total_pavao_no_report = len(placas_pavao)
+    if total_pavao_no_report == 0:
         return pavao_content, [], ""
     
     # Extrair placas da coluna DESTINO (procurar por 6 caracteres contíguos)
@@ -85,9 +159,10 @@ def processar_pavao_com_destino(pavao_content, df, coluna_destino):
     pavao_atualizado = '\n'.join(linhas_atualizadas).strip()
     
     # Avisar sobre discrepâncias
+    # Comparar com o pavao_count_feito (OK contados), não com o total no report anterior
     aviso = ""
-    if total_pavao != len(placas_removidas):
-        aviso = f"\n⚠️  [AVISO] PAVÃO: Foram removidas {len(placas_removidas)} de {total_pavao} placas. Remova manualmente as não identificadas."
+    if pavao_count_feito != len(placas_removidas):
+        aviso = f"\n⚠️  [AVISO] PAVÃO: {pavao_count_feito} PAVÕES foram feitos (OK), mas apenas {len(placas_removidas)} foram encontrados em DESTINO. {pavao_count_feito - len(placas_removidas)} ainda precisam ser removidas manualmente."
     
     return pavao_atualizado, placas_removidas, aviso
 
@@ -250,6 +325,7 @@ def create_report(plano_do_dia, responsavel, aguardando_mdf, aguardando_faturame
         checkout_count = 0
         saida_itu_dhl = 0
         troca_cavalo_content = ""
+        motoristas_atraso_content = ""
         
         # Encontrar todas as colunas que contém "VIAGEM"
         colunas_viagem = [col for col in df.columns if 'VIAGEM' in str(col).upper()]
@@ -294,6 +370,8 @@ def create_report(plano_do_dia, responsavel, aguardando_mdf, aguardando_faturame
                     if motorista_str and motorista_str != 'nan' and frota_str and frota_str != 'nan':
                         troca_cavalo_content += f"{motorista_str} - {frota_str}\n"
                         print(f"{Fore.GREEN}  ✓ TROCA DE CAVALO: {motorista_str} - {frota_str}{Style.RESET_ALL}")
+            
+            # Coletar MOTORISTAS EM ATRASO será feito após a leitura da planilha
         
         if colunas_viagem and 'ESCALA' in df.columns:
             print(f"{Fore.YELLOW}⏳ Analisando viagens...{Style.RESET_ALL}")
@@ -423,11 +501,18 @@ def create_report(plano_do_dia, responsavel, aguardando_mdf, aguardando_faturame
     # Prepare the report content
     data_atual = datetime.now().strftime('%d/%m')
     
+    # Extrair motoristas em atraso (com anotações do Excel na coluna APRESENTA)
+    motoristas_atraso_content = extrair_motoristas_atraso(arquivo_escala, coluna_motorista, 'APRESENTA', 'ESCALA')
+    if motoristas_atraso_content:
+        print(f"{Fore.CYAN}ℹ Motoristas em atraso encontrados com anotações:{Style.RESET_ALL}")
+        for linha in motoristas_atraso_content.strip().split('\n'):
+            print(f"  - {linha}")
+    
     # Processar PAVÃO: remover linhas que correspondem a placas em DESTINO
     coluna_destino = 'DESTINO' if 'DESTINO' in df.columns else None
     aviso_pavao = ""
     if coluna_destino:
-        pavao_content_processado, placas_removidas, aviso_pavao = processar_pavao_com_destino(pavao_content, df, coluna_destino)
+        pavao_content_processado, placas_removidas, aviso_pavao = processar_pavao_com_destino(pavao_content, df, coluna_destino, pavao_count)
         if placas_removidas:
             print(f"{Fore.CYAN}ℹ Removidas {len(placas_removidas)} placa(s) do PAVÃO que foram encontradas em DESTINO{Style.RESET_ALL}")
             for placa in placas_removidas:
@@ -471,6 +556,8 @@ SAÍDA ITU x SOROCABA:
 ENTRADA SOROCABA x ITU: 
 
 MOTORISTA EM ATRASO:
+
+{motoristas_atraso_content}
 
 """
 
