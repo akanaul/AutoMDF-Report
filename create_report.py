@@ -21,6 +21,78 @@ def remover_acentos(texto):
     nfd = unicodedata.normalize('NFD', texto)
     return ''.join(char for char in nfd if unicodedata.category(char) != 'Mn')
 
+def extrair_placas_de_pavao(texto_pavao):
+    """
+    Extrai placas do texto de PAVÃO
+    Procura por padrão "PLACA: " seguido de exatamente 6 caracteres/dígitos
+    Retorna lista de placas limpas (sem hífen)
+    """
+    placas = []
+    if not texto_pavao:
+        return placas
+    
+    # Padrão para encontrar "PLACA: " seguido de EXATAMENTE 6 caracteres
+    pattern = r'PLACA:\s*([A-Z0-9\-]{6})'
+    for linha in texto_pavao.splitlines():
+        match = re.search(pattern, linha, re.IGNORECASE)
+        if match:
+            placa = match.group(1).strip().upper()
+            placa_limpa = placa.replace('-', '')
+            placas.append(placa_limpa)
+    
+    return placas
+
+def processar_pavao_com_destino(pavao_content, df, coluna_destino):
+    """
+    Remove linhas de PAVÃO que existem em DESTINO
+    Extrai exatamente 6 caracteres após "PLACA: "
+    Retorna: (conteúdo atualizado, lista de placas removidas, aviso se houver discrepâncias)
+    """
+    if not pavao_content or coluna_destino not in df.columns:
+        return pavao_content, [], ""
+    
+    # Extrair placas do PAVÃO (somente linhas com "PLACA:")
+    placas_pavao = extrair_placas_de_pavao(pavao_content)
+    total_pavao = len(placas_pavao)
+    if total_pavao == 0:
+        return pavao_content, [], ""
+    
+    # Extrair placas da coluna DESTINO (procurar por 6 caracteres contíguos)
+    placas_destino = set()
+    pattern_dest = r'([A-Z0-9\-]{6})'
+    for dest in df[coluna_destino].dropna():
+        dest_str = str(dest).strip().upper()
+        matches_dest = re.findall(pattern_dest, dest_str)
+        for match in matches_dest:
+            placa_limpa = match.replace('-', '')
+            placas_destino.add(placa_limpa)
+    
+    # Remover apenas linhas que possuem "PLACA:" e cuja placa está em DESTINO
+    placas_removidas = []
+    linhas_pavao = pavao_content.strip().split('\n')
+    linhas_atualizadas = []
+    pattern_pavao = r'PLACA:\s*([A-Z0-9\-]{6})'
+    
+    for linha in linhas_pavao:
+        match = re.search(pattern_pavao, linha, re.IGNORECASE)
+        if match:
+            placa = match.group(1).strip().upper().replace('-', '')
+            if placa in placas_destino:
+                placas_removidas.append(placa)
+                continue
+        linhas_atualizadas.append(linha)
+    
+    pavao_atualizado = '\n'.join(linhas_atualizadas).strip()
+    
+    # Avisar sobre discrepâncias
+    aviso = ""
+    if total_pavao != len(placas_removidas):
+        aviso = f"\n⚠️  [AVISO] PAVÃO: Foram removidas {len(placas_removidas)} de {total_pavao} placas. Remova manualmente as não identificadas."
+    
+    return pavao_atualizado, placas_removidas, aviso
+
+
+
 def limpar_tela():
     os.system('cls' if os.name == 'nt' else 'clear')
 
@@ -351,6 +423,20 @@ def create_report(plano_do_dia, responsavel, aguardando_mdf, aguardando_faturame
     # Prepare the report content
     data_atual = datetime.now().strftime('%d/%m')
     
+    # Processar PAVÃO: remover linhas que correspondem a placas em DESTINO
+    coluna_destino = 'DESTINO' if 'DESTINO' in df.columns else None
+    aviso_pavao = ""
+    if coluna_destino:
+        pavao_content_processado, placas_removidas, aviso_pavao = processar_pavao_com_destino(pavao_content, df, coluna_destino)
+        if placas_removidas:
+            print(f"{Fore.CYAN}ℹ Removidas {len(placas_removidas)} placa(s) do PAVÃO que foram encontradas em DESTINO{Style.RESET_ALL}")
+            for placa in placas_removidas:
+                print(f"  - {placa}")
+        if aviso_pavao:
+            print(f"{Fore.YELLOW}{aviso_pavao}{Style.RESET_ALL}")
+    else:
+        pavao_content_processado = pavao_content
+    
     # Adicionar linha PAVAO apenas se existir pelo menos um registro
     pavao_line = f"PAVAO: {pavao_count}\n" if pavao_count > 0 else ""
     
@@ -367,7 +453,7 @@ AGUARDANDO CHECKOUT: {checkout_count}
 
 PAVÃO:
 
-{pavao_content}
+{pavao_content_processado}
 
 PENDÊNCIAS:
 
