@@ -119,6 +119,7 @@ def _extrair_secao_por_linha(conteudo, cabecalhos_secao, cabecalhos_proxima_seca
 def extrair_motoristas_atraso(arquivo_excel, coluna_motorista, coluna_apresenta, coluna_escala):
     """
     Extrai motoristas em atraso que possuem ANOTAÇÕES (comentários do Excel) na coluna APRESENTA
+    E onde o horário em APRESENTA é MAIOR que o horário em ESCALA
     Retorna string formatada: MOTORISTA - ESCALA: HH:MM - ANOTAÇÃO
     """
     motoristas_atraso = ""
@@ -162,24 +163,57 @@ def extrair_motoristas_atraso(arquivo_excel, coluna_motorista, coluna_apresenta,
                 
                 motorista_val = cell_motorista.value
                 escala_val = cell_escala.value
+                apresenta_val = cell_apresenta.value
                 
-                if motorista_val and anotacao_texto:
+                if motorista_val and anotacao_texto and escala_val is not None and apresenta_val is not None:
                     motorista_str = str(motorista_val).strip()
                     anotacao_str = str(anotacao_texto).strip()
                     
-                    # Extrair apenas o corpo da anotação (após os :)
-                    if ':' in anotacao_str:
-                        anotacao_str = anotacao_str.split(':', 1)[1].strip()
+                    # Extrair horas para comparação
+                    hora_escala = None
+                    hora_apresenta = None
                     
-                    # Formatar escala
+                    # Extrair hora de ESCALA
                     if isinstance(escala_val, datetime):
-                        escala_str = escala_val.strftime('%H:%M')
+                        hora_escala = escala_val.time()
                     elif isinstance(escala_val, time):
-                        escala_str = escala_val.strftime('%H:%M')
-                    else:
-                        escala_str = str(escala_val).strip() if escala_val else ""
+                        hora_escala = escala_val
+                    elif isinstance(escala_val, str):
+                        try:
+                            partes = escala_val.strip().split(':')
+                            if len(partes) >= 2:
+                                hora_escala = time(int(partes[0]), int(partes[1]))
+                        except (ValueError, IndexError):
+                            pass
                     
-                    motoristas_atraso += f"{motorista_str} - ESCALA: {escala_str} - {anotacao_str}\n"
+                    # Extrair hora de APRESENTA
+                    if isinstance(apresenta_val, datetime):
+                        hora_apresenta = apresenta_val.time()
+                    elif isinstance(apresenta_val, time):
+                        hora_apresenta = apresenta_val
+                    elif isinstance(apresenta_val, str):
+                        try:
+                            partes = apresenta_val.strip().split(':')
+                            if len(partes) >= 2:
+                                hora_apresenta = time(int(partes[0]), int(partes[1]))
+                        except (ValueError, IndexError):
+                            pass
+                    
+                    # Verificar se APRESENTA > ESCALA (comparação de horas)
+                    if hora_escala is not None and hora_apresenta is not None and hora_apresenta > hora_escala:
+                        # Extrair apenas o corpo da anotação (após os :)
+                        if ':' in anotacao_str:
+                            anotacao_str = anotacao_str.split(':', 1)[1].strip()
+                        
+                        # Formatar escala
+                        if isinstance(escala_val, datetime):
+                            escala_str = escala_val.strftime('%H:%M')
+                        elif isinstance(escala_val, time):
+                            escala_str = escala_val.strftime('%H:%M')
+                        else:
+                            escala_str = str(escala_val).strip() if escala_val else ""
+                        
+                        motoristas_atraso += f"{motorista_str} - ESCALA: {escala_str} - {anotacao_str}\n"
         
         wb.close()
         
