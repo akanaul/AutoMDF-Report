@@ -21,6 +21,96 @@ def remover_acentos(texto):
     nfd = unicodedata.normalize('NFD', texto)
     return ''.join(char for char in nfd if unicodedata.category(char) != 'Mn')
 
+def _normalizar_com_mapa(texto):
+    """
+    Normaliza removendo acentos e retorna:
+    - texto_normalizado
+    - mapa_indices: lista onde cada índice do texto normalizado aponta para o índice correspondente no texto original
+    """
+    normalizado_chars = []
+    mapa_indices = []
+    for idx, ch in enumerate(texto):
+        ch_normalizado = remover_acentos(ch)
+        if not ch_normalizado:
+            continue
+        for _ in ch_normalizado:
+            normalizado_chars.append(_.upper())
+            mapa_indices.append(idx)
+    return ''.join(normalizado_chars), mapa_indices
+
+def _extrair_secao_texto(conteudo, cabecalhos_secao, cabecalhos_proxima_secao):
+    """
+    Extrai uma seção do texto usando busca sem acentos, preservando os índices do texto original.
+    Retorna a substring original (sem o cabeçalho).
+    """
+    if not conteudo:
+        return ""
+
+    conteudo_normalizado, mapa_indices = _normalizar_com_mapa(conteudo)
+    if not conteudo_normalizado:
+        return ""
+
+    cabecalhos_norm = [remover_acentos(cab.upper()) for cab in cabecalhos_secao]
+    proximos_norm = [remover_acentos(cab.upper()) for cab in cabecalhos_proxima_secao]
+
+    inicio_norm = -1
+    cabecalho_encontrado = ""
+    for cab in cabecalhos_norm:
+        match = re.search(re.escape(cab), conteudo_normalizado)
+        if match:
+            inicio_norm = match.start() + len(cab)
+            cabecalho_encontrado = cab
+            break
+
+    if inicio_norm == -1:
+        return ""
+
+    fim_norm = -1
+    if proximos_norm:
+        match_fim = re.search('|'.join(re.escape(p) for p in proximos_norm), conteudo_normalizado[inicio_norm:])
+        if match_fim:
+            fim_norm = inicio_norm + match_fim.start()
+
+    if inicio_norm >= len(mapa_indices):
+        return ""
+
+    inicio_orig = mapa_indices[inicio_norm]
+    if fim_norm != -1 and fim_norm - 1 < len(mapa_indices):
+        fim_orig = mapa_indices[fim_norm - 1] + 1
+        return conteudo[inicio_orig:fim_orig]
+    return conteudo[inicio_orig:]
+
+def _extrair_secao_por_linha(conteudo, cabecalhos_secao, cabecalhos_proxima_secao):
+    """
+    Extrai uma seção procurando cabeçalhos em linhas isoladas (sem texto após ':').
+    Usa comparação sem acentos. Retorna a substring original (sem o cabeçalho).
+    """
+    if not conteudo:
+        return ""
+
+    cabecalhos_norm = {remover_acentos(cab.upper()).strip() for cab in cabecalhos_secao}
+    proximos_norm = {remover_acentos(cab.upper()).strip() for cab in cabecalhos_proxima_secao}
+
+    inicio_idx = None
+    fim_idx = None
+    offset = 0
+
+    for linha in conteudo.splitlines(keepends=True):
+        linha_norm = remover_acentos(linha.upper()).strip()
+        if inicio_idx is None and linha_norm in cabecalhos_norm:
+            inicio_idx = offset + len(linha)
+        elif inicio_idx is not None and linha_norm in proximos_norm:
+            fim_idx = offset
+            break
+        offset += len(linha)
+
+    if inicio_idx is None:
+        return ""
+    if fim_idx is None:
+        return conteudo[inicio_idx:]
+    return conteudo[inicio_idx:fim_idx]
+
+
 def extrair_motoristas_atraso(arquivo_excel, coluna_motorista, coluna_apresenta, coluna_escala):
     """
     Extrai motoristas em atraso que possuem ANOTAÇÕES (comentários do Excel) na coluna APRESENTA
@@ -94,35 +184,61 @@ def extrair_motoristas_atraso(arquivo_excel, coluna_motorista, coluna_apresenta,
     return motoristas_atraso
 
 
+def extrair_placa_de_linha_pavao(linha):
+    """
+    Extrai placa de uma linha do PAVÃO.
+    Aceita:
+    - "PLACA: XXXXXX"
+    - linha iniciando com XXXXXX (6 caracteres)
+    Retorna a placa limpa (sem hífen) ou "".
+    """
+    if not linha:
+        return ""
+
+    # Prioriza padrão "PLACA: "
+    match = re.search(r'PLACA:\s*([A-Z0-9\-]{6,7})', linha, re.IGNORECASE)
+    if match:
+        return match.group(1).strip().upper().replace('-', '')
+
+    # Fallback: placa em qualquer lugar da linha (6 caracteres)
+    match_qualquer = re.search(r'(?<![A-Z0-9\-])([A-Z0-9\-]{6,7})(?![A-Z0-9\-])', linha, re.IGNORECASE)
+    if match_qualquer:
+        return match_qualquer.group(1).strip().upper().replace('-', '')
+
+    return ""
+
 def extrair_placas_de_pavao(texto_pavao):
     """
-    Extrai placas do texto de PAVÃO
-    Procura por padrão "PLACA: " seguido de exatamente 6 caracteres/dígitos
-    Retorna lista de placas limpas (sem hífen)
+    Extrai placas do texto de PAVÃO.
+    Procura por "PLACA: XXXXXX" ou linha iniciando com XXXXXX.
+    Retorna lista de placas limpas (sem hífen).
     """
     placas = []
     if not texto_pavao:
         return placas
-    
-    # Padrão para encontrar "PLACA: " seguido de EXATAMENTE 6 caracteres
-    pattern = r'PLACA:\s*([A-Z0-9\-]{6})'
+
     for linha in texto_pavao.splitlines():
-        match = re.search(pattern, linha, re.IGNORECASE)
-        if match:
-            placa = match.group(1).strip().upper()
-            placa_limpa = placa.replace('-', '')
-            placas.append(placa_limpa)
-    
+        placa = extrair_placa_de_linha_pavao(linha)
+        if placa:
+            placas.append(placa)
+
     return placas
 
-def processar_pavao_com_destino(pavao_content, df, coluna_destino, pavao_count_feito):
+def processar_pavao_com_destino(pavao_content, df, colunas_comparacao, pavao_count_feito):
     """
     Remove linhas de PAVÃO que existem em DESTINO
     Extrai exatamente 6 caracteres após "PLACA: "
     Compara com o pavao_count_feito (número de OK contados)
     Retorna: (conteúdo atualizado, lista de placas removidas, aviso se houver discrepâncias)
     """
-    if not pavao_content or coluna_destino not in df.columns:
+    if not pavao_content:
+        return pavao_content, [], ""
+
+    if isinstance(colunas_comparacao, str):
+        colunas_comparacao = [colunas_comparacao]
+
+    colunas_validas = [col for col in (colunas_comparacao or []) if col in df.columns]
+    if not colunas_validas:
         return pavao_content, [], ""
     
     # Extrair placas do PAVÃO (somente linhas com "PLACA:")
@@ -131,29 +247,27 @@ def processar_pavao_com_destino(pavao_content, df, coluna_destino, pavao_count_f
     if total_pavao_no_report == 0:
         return pavao_content, [], ""
     
-    # Extrair placas da coluna DESTINO (procurar por 6 caracteres contíguos)
+    # Extrair placas das colunas de comparação (DESTINO, CAVALO, etc.)
     placas_destino = set()
-    pattern_dest = r'([A-Z0-9\-]{6})'
-    for dest in df[coluna_destino].dropna():
-        dest_str = str(dest).strip().upper()
-        matches_dest = re.findall(pattern_dest, dest_str)
-        for match in matches_dest:
-            placa_limpa = match.replace('-', '')
-            placas_destino.add(placa_limpa)
+    pattern_dest = r'([A-Z0-9\-]{6,7})'
+    for col in colunas_validas:
+        for dest in df[col].dropna():
+            dest_str = str(dest).strip().upper()
+            matches_dest = re.findall(pattern_dest, dest_str)
+            for match in matches_dest:
+                placa_limpa = match.replace('-', '')
+                placas_destino.add(placa_limpa)
     
-    # Remover apenas linhas que possuem "PLACA:" e cuja placa está em DESTINO
+    # Remover linhas do PAVÃO cuja placa está em DESTINO (com ou sem "PLACA:")
     placas_removidas = []
     linhas_pavao = pavao_content.strip().split('\n')
     linhas_atualizadas = []
-    pattern_pavao = r'PLACA:\s*([A-Z0-9\-]{6})'
     
     for linha in linhas_pavao:
-        match = re.search(pattern_pavao, linha, re.IGNORECASE)
-        if match:
-            placa = match.group(1).strip().upper().replace('-', '')
-            if placa in placas_destino:
-                placas_removidas.append(placa)
-                continue
+        placa = extrair_placa_de_linha_pavao(linha)
+        if placa and placa in placas_destino:
+            placas_removidas.append(placa)
+            continue
         linhas_atualizadas.append(linha)
     
     pavao_atualizado = '\n'.join(linhas_atualizadas).strip()
@@ -243,59 +357,24 @@ def create_report(plano_do_dia, responsavel, aguardando_mdf, aguardando_faturame
         try:
             with open('2.ULTIMO-REPORT/COLE_AQUI.txt', 'r', encoding='utf-8') as file:
                 conteudo = file.read()
-                conteudo_sem_acentos = remover_acentos(conteudo.upper())
                 
-                # Extrair conteúdo de PAVÃO: (com ou sem acento)
-                palavras_pavao = ['PAVÃO:', 'PAVAO:']
-                for palavra in palavras_pavao:
-                    palavra_busca = remover_acentos(palavra.upper())
-                    if palavra_busca in conteudo_sem_acentos:
-                        # Encontrar a posição no texto original
-                        for i, match in enumerate(re.finditer(re.escape(palavra_busca), conteudo_sem_acentos)):
-                            inicio_pavao = match.start() + len(palavra_busca)
-                            # Procurar próxima seção
-                            palavras_proxima = ['PENDÊNCIAS:', 'PENDENCIAS:']
-                            proximo_indice = -1
-                            for prox_palavra in palavras_proxima:
-                                prox_busca = remover_acentos(prox_palavra.upper())
-                                match_prox = re.search(re.escape(prox_busca), conteudo_sem_acentos[inicio_pavao:])
-                                if match_prox:
-                                    proximo_indice = inicio_pavao + match_prox.start()
-                                    break
-                            
-                            if proximo_indice != -1:
-                                pavao_content = conteudo[inicio_pavao:proximo_indice].strip().upper()
-                            else:
-                                pavao_content = conteudo[inicio_pavao:].strip().upper()
-                            break
-                        if pavao_content:
-                            break
+                # Extrair conteúdo de PAVÃO: (com ou sem acento) - somente cabeçalho em linha isolada
+                pavao_raw = _extrair_secao_por_linha(
+                    conteudo,
+                    ['PAVÃO:', 'PAVAO:'],
+                    ['PENDÊNCIAS:', 'PENDENCIAS:']
+                )
+                if pavao_raw:
+                    pavao_content = pavao_raw.strip().upper()
                 
                 # Extrair conteúdo de PENDÊNCIAS: (com ou sem acento)
-                palavras_pendencias = ['PENDÊNCIAS:', 'PENDENCIAS:']
-                for palavra in palavras_pendencias:
-                    palavra_busca = remover_acentos(palavra.upper())
-                    if palavra_busca in conteudo_sem_acentos:
-                        # Encontrar a posição no texto original
-                        for i, match in enumerate(re.finditer(re.escape(palavra_busca), conteudo_sem_acentos)):
-                            inicio_pendencias = match.start() + len(palavra_busca)
-                            # Procurar próxima seção
-                            palavras_proxima = ['TROCA DE CAVALO:', 'TROCA DE CAVALO:']
-                            proximo_indice = -1
-                            for prox_palavra in palavras_proxima:
-                                prox_busca = remover_acentos(prox_palavra.upper())
-                                match_prox = re.search(re.escape(prox_busca), conteudo_sem_acentos[inicio_pendencias:])
-                                if match_prox:
-                                    proximo_indice = inicio_pendencias + match_prox.start()
-                                    break
-                            
-                            if proximo_indice != -1:
-                                pendencias_content = conteudo[inicio_pendencias:proximo_indice].strip().upper()
-                            else:
-                                pendencias_content = conteudo[inicio_pendencias:].strip().upper()
-                            break
-                        if pendencias_content:
-                            break
+                pendencias_raw = _extrair_secao_por_linha(
+                    conteudo,
+                    ['PENDÊNCIAS:', 'PENDENCIAS:'],
+                    ['TROCA DE CAVALO:']
+                )
+                if pendencias_raw:
+                    pendencias_content = pendencias_raw.strip().upper()
                 
                 print(f"{Fore.CYAN}✓ Arquivo COLE_AQUI.txt lido com sucesso{Style.RESET_ALL}")
         except FileNotFoundError:
@@ -367,7 +446,9 @@ def create_report(plano_do_dia, responsavel, aguardando_mdf, aguardando_faturame
                     frota_str = str(frota_val).strip() if pd.notna(frota_val) else ""
                     motorista_str = str(motorista_val).strip() if pd.notna(motorista_val) else ""
                     
-                    if motorista_str and motorista_str != 'nan' and frota_str and frota_str != 'nan':
+                    frota_valida = frota_str and frota_str != 'nan' and frota_str != '-'
+                    motorista_valido = motorista_str and motorista_str != 'nan' and motorista_str != '-'
+                    if motorista_valido and frota_valida:
                         troca_cavalo_content += f"{motorista_str} - {frota_str}\n"
                         print(f"{Fore.GREEN}  ✓ TROCA DE CAVALO: {motorista_str} - {frota_str}{Style.RESET_ALL}")
             
@@ -509,12 +590,12 @@ def create_report(plano_do_dia, responsavel, aguardando_mdf, aguardando_faturame
             print(f"  - {linha}")
     
     # Processar PAVÃO: remover linhas que correspondem a placas em DESTINO
-    coluna_destino = 'DESTINO' if 'DESTINO' in df.columns else None
+    colunas_comparacao = [col for col in ['CAVALO', 'DESTINO'] if col in df.columns]
     aviso_pavao = ""
-    if coluna_destino:
-        pavao_content_processado, placas_removidas, aviso_pavao = processar_pavao_com_destino(pavao_content, df, coluna_destino, pavao_count)
+    if colunas_comparacao:
+        pavao_content_processado, placas_removidas, aviso_pavao = processar_pavao_com_destino(pavao_content, df, colunas_comparacao, pavao_count)
         if placas_removidas:
-            print(f"{Fore.CYAN}ℹ Removidas {str(len(placas_removidas)).zfill(2)} placa(s) do PAVÃO que foram encontradas em DESTINO{Style.RESET_ALL}")
+            print(f"{Fore.CYAN}ℹ Removidas {str(len(placas_removidas)).zfill(2)} placa(s) do PAVÃO que foram encontradas na escala (CAVALO/DESTINO){Style.RESET_ALL}")
             for placa in placas_removidas:
                 print(f"  - {placa}")
         if aviso_pavao:
@@ -524,6 +605,8 @@ def create_report(plano_do_dia, responsavel, aguardando_mdf, aguardando_faturame
     
     # Adicionar linha PAVAO apenas se existir pelo menos um registro
     pavao_line = f"PAVAO: {str(pavao_count).zfill(2)}\n" if pavao_count > 0 else ""
+
+    saida_itu_dhl_output = str(saida_itu_dhl).zfill(2) if saida_itu_dhl > 0 else ""
     
     report_content = f"""REPORT OPERAÇÃO P2 {data_atual} - {responsavel}
 
@@ -551,7 +634,7 @@ TROCA DE CAVALO:
 MOVIMENTAÇÕES SÓ CAVALO:
 
 ENTRADA DHL X ITU: 
-SAÍDA ITU X DHL: {saida_itu_dhl}
+SAÍDA ITU X DHL: {saida_itu_dhl_output}
 SAÍDA ITU x SOROCABA: 
 ENTRADA SOROCABA x ITU: 
 
