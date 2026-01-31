@@ -16,6 +16,11 @@ except ImportError:
 # Inicializar colorama
 init(autoreset=True)
 
+# Compilar regexes globalmente para performance
+PLACA_PATTERN = re.compile(r'PLACA:\s*([A-Z0-9\-]{6,7})', re.IGNORECASE)
+PLACA_QUALQUER_PATTERN = re.compile(r'(?<![A-Z0-9\-])([A-Z0-9\-]{6,7})(?![A-Z0-9\-])', re.IGNORECASE)
+DEST_PATTERN = re.compile(r'([A-Z0-9\-]{6,7})')
+
 def remover_acentos(texto):
     """Remove acentos de um texto"""
     nfd = unicodedata.normalize('NFD', texto)
@@ -196,12 +201,12 @@ def extrair_placa_de_linha_pavao(linha):
         return ""
 
     # Prioriza padrão "PLACA: "
-    match = re.search(r'PLACA:\s*([A-Z0-9\-]{6,7})', linha, re.IGNORECASE)
+    match = PLACA_PATTERN.search(linha)
     if match:
         return match.group(1).strip().upper().replace('-', '')
 
     # Fallback: placa em qualquer lugar da linha (6 caracteres)
-    match_qualquer = re.search(r'(?<![A-Z0-9\-])([A-Z0-9\-]{6,7})(?![A-Z0-9\-])', linha, re.IGNORECASE)
+    match_qualquer = PLACA_QUALQUER_PATTERN.search(linha)
     if match_qualquer:
         return match_qualquer.group(1).strip().upper().replace('-', '')
 
@@ -249,11 +254,10 @@ def processar_pavao_com_destino(pavao_content, df, colunas_comparacao, pavao_cou
     
     # Extrair placas das colunas de comparação (DESTINO, CAVALO, etc.)
     placas_destino = set()
-    pattern_dest = r'([A-Z0-9\-]{6,7})'
     for col in colunas_validas:
         for dest in df[col].dropna():
             dest_str = str(dest).strip().upper()
-            matches_dest = re.findall(pattern_dest, dest_str)
+            matches_dest = DEST_PATTERN.findall(dest_str)
             for match in matches_dest:
                 placa_limpa = match.replace('-', '')
                 placas_destino.add(placa_limpa)
@@ -285,6 +289,40 @@ def processar_pavao_com_destino(pavao_content, df, colunas_comparacao, pavao_cou
 def limpar_tela():
     os.system('cls' if os.name == 'nt' else 'clear')
 
+def _extrair_hora_segura(valor_escala):
+    """
+    Extrai hora com segurança de diferentes tipos de dados.
+    Retorna tuple (hora:time ou None, sucesso:bool, mensagem:str)
+    """
+    try:
+        if isinstance(valor_escala, datetime):
+            return valor_escala.time(), True, ""
+        elif isinstance(valor_escala, time):
+            return valor_escala, True, ""
+        elif isinstance(valor_escala, str):
+            escala_limpa = valor_escala.strip()
+            hora_partes = escala_limpa.split(':')
+            if len(hora_partes) >= 2:
+                horas = int(hora_partes[0])
+                minutos = int(hora_partes[1])
+                return time(horas, minutos), True, ""
+            else:
+                return None, False, f"formato de hora inválido"
+        elif pd.isna(valor_escala):
+            return None, False, "campo ESCALA vazio"
+        else:
+            return None, False, f"tipo desconhecido: {type(valor_escala)}"
+    except Exception as ex:
+        return None, False, str(ex)
+
+def _hora_em_intervalo(hora, inicio_str='00:00', fim_str='05:20'):
+    """Verifica se hora está no intervalo (inclusive)"""
+    if hora is None:
+        return False
+    inicio = datetime.strptime(inicio_str, '%H:%M').time()
+    fim = datetime.strptime(fim_str, '%H:%M').time()
+    return hora >= inicio and hora <= fim
+
 def encontrar_arquivo_escala():
     """Encontra o primeiro arquivo Excel que comece com 'ESCALA' na pasta"""
     arquivos = glob.glob('1.ESCALA-FIM-TURNO/ESCALA*.xlsx')
@@ -297,7 +335,6 @@ def obter_linhas_com_valores_reais(arquivo_excel, nome_coluna_frota):
     Retorna índices das linhas que têm valores reais (não fórmulas) na coluna FROTA
     """
     linhas_reais = set()
-    debug_info = []
     
     if not OPENPYXL_AVAILABLE:
         # Se openpyxl não está disponível, retorna todas as linhas (fallback)
@@ -316,33 +353,21 @@ def obter_linhas_com_valores_reais(arquivo_excel, nome_coluna_frota):
         
         if coluna_frota_idx is None:
             print(f"{Fore.YELLOW}⚠ Coluna {nome_coluna_frota} não encontrada no header{Style.RESET_ALL}")
+            wb.close()
             return None
         
-        print(f"{Fore.CYAN}🔍 Detectando valores reais em FROTA (coluna índice {coluna_frota_idx})...{Style.RESET_ALL}")
-        
         # Iterar pelas linhas e verificar se a célula tem fórmula
-        for row_num, row in enumerate(ws.iter_rows(min_row=2, max_row=ws.max_row), start=2):
-            cell = row[coluna_frota_idx - 1]
+        for row_num in range(2, ws.max_row + 1):
+            cell = ws.cell(row=row_num, column=coluna_frota_idx)
             # Se a célula não começa com "=" (não é fórmula) e tem valor
             if cell.value and not str(cell.value).startswith('='):
                 linhas_reais.add(row_num)
-                debug_info.append(f"Linha {row_num}: FROTA={cell.value}")
-        
-        # Mostrar debug info das primeiras 5 linhas encontradas
-        if debug_info:
-            print(f"{Fore.CYAN}📊 Valores reais encontrados:{Style.RESET_ALL}")
-            for info in debug_info[:10]:
-                print(f"  {info}")
-            if len(debug_info) > 10:
-                print(f"  ... e mais {len(debug_info) - 10}")
         
         wb.close()
         return linhas_reais if linhas_reais else None
         
     except Exception as e:
         print(f"{Fore.YELLOW}⚠ Erro ao detectar fórmulas: {e}{Style.RESET_ALL}")
-        import traceback
-        traceback.print_exc()
         return None
 
 # Function to create the report
@@ -395,7 +420,6 @@ def create_report(plano_do_dia, responsavel, aguardando_mdf, aguardando_faturame
         print(f"{Fore.CYAN}📋 Colunas encontradas: {list(df.columns)}{Style.RESET_ALL}")
         
         # Process the data as needed
-        # For example, let's assume we want to count the number of drivers
         num_motoristas = len(df)
         
         # Analisar colunas VIAGEM e ESCALA para contar enviados
@@ -406,165 +430,78 @@ def create_report(plano_do_dia, responsavel, aguardando_mdf, aguardando_faturame
         troca_cavalo_content = ""
         motoristas_atraso_content = ""
         
-        # Encontrar todas as colunas que contém "VIAGEM"
+        # Encontrar todas as colunas que contém "VIAGEM" - usar set para busca rápida
         colunas_viagem = [col for col in df.columns if 'VIAGEM' in str(col).upper()]
+        colunas_viagem_set = set(colunas_viagem)
         
         # Encontrar coluna FROTA e MOTORISTA para TROCA DE CAVALO
         coluna_frota = None
         coluna_motorista = None
         for col in df.columns:
-            if 'FROTA' in str(col).upper():
+            col_upper = str(col).upper()
+            if 'FROTA' in col_upper:
                 coluna_frota = col
-            if 'MOTORISTA' in str(col).upper():
+            if 'MOTORISTA' in col_upper:
                 coluna_motorista = col
         
-        print(f"{Fore.CYAN}📋 Total de colunas encontradas: {len(df.columns)}{Style.RESET_ALL}")
-        print(f"{Fore.CYAN}📋 Colunas de viagem: {colunas_viagem}{Style.RESET_ALL}")
-        print(f"{Fore.CYAN}📋 Coluna FROTA: {coluna_frota}{Style.RESET_ALL}")
-        print(f"{Fore.CYAN}📋 Coluna MOTORISTA: {coluna_motorista}{Style.RESET_ALL}")
+        print(f"{Fore.CYAN}📋 Colunas de viagem: {len(colunas_viagem)}{Style.RESET_ALL}")
         
         # Obter linhas com valores reais (não fórmulas) na coluna FROTA
         linhas_frota_reais = None
         if coluna_frota:
-            print(f"{Fore.CYAN}[DEBUG] Chamando obter_linhas_com_valores_reais para coluna: {coluna_frota}{Style.RESET_ALL}")
             linhas_frota_reais = obter_linhas_com_valores_reais(arquivo_escala, coluna_frota)
-            print(f"{Fore.CYAN}[DEBUG] Resultado de obter_linhas_com_valores_reais: {linhas_frota_reais}{Style.RESET_ALL}")
             if linhas_frota_reais:
                 print(f"{Fore.CYAN}📦 Encontradas {len(linhas_frota_reais)} linhas com valores reais em FROTA{Style.RESET_ALL}")
-        
-        # Coletar dados de TROCA DE CAVALO ANTES do loop de viagens
-        for index, row in df.iterrows():
-            # Coletar dados de TROCA DE CAVALO (valores que não são fórmulas)
-            if coluna_frota and coluna_motorista and linhas_frota_reais is not None:
-                # Usar o índice da linha (index é baseado em 0, mas as linhas reais estão baseadas em 1 do Excel)
-                linha_excel = index + 2  # +2 porque Excel começa em 1 e pula o header
-                
-                if linha_excel in linhas_frota_reais:
-                    frota_val = row[coluna_frota]
-                    motorista_val = row[coluna_motorista]
-                    
-                    frota_str = str(frota_val).strip() if pd.notna(frota_val) else ""
-                    motorista_str = str(motorista_val).strip() if pd.notna(motorista_val) else ""
-                    
-                    frota_valida = frota_str and frota_str != 'nan' and frota_str != '-'
-                    motorista_valido = motorista_str and motorista_str != 'nan' and motorista_str != '-'
-                    if motorista_valido and frota_valida:
-                        troca_cavalo_content += f"{motorista_str} - {frota_str}\n"
-                        print(f"{Fore.GREEN}  ✓ TROCA DE CAVALO: {motorista_str} - {frota_str}{Style.RESET_ALL}")
-            
-            # Coletar MOTORISTAS EM ATRASO será feito após a leitura da planilha
         
         if colunas_viagem and 'ESCALA' in df.columns:
             print(f"{Fore.YELLOW}⏳ Analisando viagens...{Style.RESET_ALL}")
             
-            # Debug: mostrar primeiras 10 linhas da primeira coluna VIAGEM e ESCALA
-            primeira_col_viagem = colunas_viagem[0]
-            print(f"\n{Fore.CYAN}📊 Primeiras 10 linhas de {primeira_col_viagem} e ESCALA:{Style.RESET_ALL}")
-            for i in range(min(10, len(df))):
-                val_viagem = df.iloc[i][primeira_col_viagem]
-                val_escala = df.iloc[i]['ESCALA']
-                print(f"  Linha {i}: VIAGEM={repr(val_viagem)} | ESCALA={repr(val_escala)}")
-            print()
+            # Pré-calcular tempo de referência uma única vez
+            tempo_inicio = datetime.strptime('00:00', '%H:%M').time()
+            tempo_fim = datetime.strptime('05:20', '%H:%M').time()
             
+            # Processar cada linha uma única vez
             for index, row in df.iterrows():
-                # Contar "OK" na coluna VIAGEM (maiúsculo ou minúsculo)
-                for col_viagem in colunas_viagem:
-                    viagem = str(row[col_viagem]).strip().upper()
-                    if viagem == 'OK':
-                        pavao_count += 1
+                linha_excel = index + 2
                 
-                # Verificar se alguma das colunas VIAGEM tem "V"
-                tem_v = False
-                for col_viagem in colunas_viagem:
-                    viagem = str(row[col_viagem]).strip().upper()
-                    if viagem == 'V':
-                        tem_v = True
-                        break
+                # Contar "OK" na coluna VIAGEM - usar any para sair rápido
+                viagem_values_ok = any(str(row.get(col, '')).strip().upper() == 'OK' for col in colunas_viagem)
+                if viagem_values_ok:
+                    pavao_count += 1
                 
-                if tem_v:
+                # Verificar se alguma das colunas VIAGEM tem "V" ou "SC"
+                viagem_values = [str(row.get(col, '')).strip().upper() for col in colunas_viagem]
+                
+                # Processar ambos V e SC em uma única passada
+                tem_v = 'V' in viagem_values
+                tem_sc = 'SC' in viagem_values
+                
+                if tem_v or tem_sc:
                     escala = row['ESCALA']
-                    # Tentar extrair hora do campo ESCALA
-                    try:
-                        if isinstance(escala, datetime):
-                            hora = escala.time()
-                        elif isinstance(escala, time):
-                            hora = escala
-                        elif isinstance(escala, str):
-                            # Tentar parsear string no formato "00:00" ou "00:00:00"
-                            escala_limpa = escala.strip()
-                            hora_partes = escala_limpa.split(':')
-                            
-                            if len(hora_partes) >= 2:
-                                horas = int(hora_partes[0])
-                                minutos = int(hora_partes[1])
-                                hora = time(horas, minutos)
-                            else:
-                                print(f"{Fore.YELLOW}  ⚠ Linha {index+2}: V encontrado mas formato de hora inválido: {repr(escala)}{Style.RESET_ALL}")
-                                continue
-                        elif pd.isna(escala):
-                            # Campo vazio/NaN - pula
-                            print(f"{Fore.YELLOW}  ⚠ Linha {index+2}: V encontrado mas ESCALA vazia{Style.RESET_ALL}")
-                            continue
-                        else:
-                            print(f"{Fore.YELLOW}  ⚠ Linha {index+2}: V encontrado mas tipo de ESCALA desconhecido: {type(escala)} = {repr(escala)}{Style.RESET_ALL}")
-                            continue
-                        
-                        # Verificar se está entre 00:00 e 05:20
-                        if hora >= datetime.strptime('00:00', '%H:%M').time() and hora <= datetime.strptime('05:20', '%H:%M').time():
+                    hora, sucesso, msg = _extrair_hora_segura(escala)
+                    
+                    if sucesso:
+                        if tem_v and _hora_em_intervalo(hora, '00:00', '05:20'):
                             enviados += 1
-                            print(f"{Fore.GREEN}  ✓ Linha {index+2}: V com hora {hora} - CONTADO{Style.RESET_ALL}")
-                        else:
+                        elif tem_v:
                             checkout_count += 1
-                            print(f"{Fore.YELLOW}  ⚠ Linha {index+2}: V com hora {hora} - FORA DO HORÁRIO (00:00-05:20) - CHECKOUT{Style.RESET_ALL}")
-                    except Exception as ex:
-                        # Se não conseguir processar a hora, ignora essa linha
-                        print(f"{Fore.YELLOW}  ⚠ Linha {index+2}: Erro ao processar - {ex} | ESCALA={repr(escala)}{Style.RESET_ALL}")
-                        continue
-                
-                # Verificar se alguma das colunas VIAGEM tem "SC"
-                tem_sc = False
-                for col_viagem in colunas_viagem:
-                    viagem = str(row[col_viagem]).strip().upper()
-                    if viagem == 'SC':
-                        tem_sc = True
-                        break
-                
-                if tem_sc:
-                    escala = row['ESCALA']
-                    # Tentar extrair hora do campo ESCALA
-                    try:
-                        if isinstance(escala, datetime):
-                            hora = escala.time()
-                        elif isinstance(escala, time):
-                            hora = escala
-                        elif isinstance(escala, str):
-                            # Tentar parsear string no formato "00:00" ou "00:00:00"
-                            escala_limpa = escala.strip()
-                            hora_partes = escala_limpa.split(':')
-                            
-                            if len(hora_partes) >= 2:
-                                horas = int(hora_partes[0])
-                                minutos = int(hora_partes[1])
-                                hora = time(horas, minutos)
-                            else:
-                                print(f"{Fore.YELLOW}  ⚠ Linha {index+2}: SC encontrado mas formato de hora inválido: {repr(escala)}{Style.RESET_ALL}")
-                                continue
-                        elif pd.isna(escala):
-                            # Campo vazio/NaN - pula
-                            print(f"{Fore.YELLOW}  ⚠ Linha {index+2}: SC encontrado mas ESCALA vazia{Style.RESET_ALL}")
-                            continue
-                        else:
-                            print(f"{Fore.YELLOW}  ⚠ Linha {index+2}: SC encontrado mas tipo de ESCALA desconhecido: {type(escala)} = {repr(escala)}{Style.RESET_ALL}")
-                            continue
                         
-                        # Verificar se está entre 00:00 e 05:20
-                        if hora >= datetime.strptime('00:00', '%H:%M').time() and hora <= datetime.strptime('05:20', '%H:%M').time():
+                        if tem_sc and _hora_em_intervalo(hora, '00:00', '05:20'):
                             saida_itu_dhl += 1
-                            print(f"{Fore.GREEN}  ✓ Linha {index+2}: SC com hora {hora} - SAÍDA ITU X DHL{Style.RESET_ALL}")
-                    except Exception as ex:
-                        # Se não conseguir processar a hora, ignora essa linha
-                        print(f"{Fore.YELLOW}  ⚠ Linha {index+2}: Erro ao processar SC - {ex} | ESCALA={repr(escala)}{Style.RESET_ALL}")
-                        continue
+                
+                # Coletar dados de TROCA DE CAVALO (valores que não são fórmulas)
+                if coluna_frota and coluna_motorista and linhas_frota_reais is not None:
+                    if linha_excel in linhas_frota_reais:
+                        frota_val = row[coluna_frota]
+                        motorista_val = row[coluna_motorista]
+                        
+                        frota_str = str(frota_val).strip() if pd.notna(frota_val) else ""
+                        motorista_str = str(motorista_val).strip() if pd.notna(motorista_val) else ""
+                        
+                        frota_valida = frota_str and frota_str != 'nan' and frota_str != '-'
+                        motorista_valido = motorista_str and motorista_str != 'nan' and motorista_str != '-'
+                        if motorista_valido and frota_valida:
+                            troca_cavalo_content += f"{motorista_str} - {frota_str}\n"
             
         else:
             print(f"{Fore.RED}✗ Colunas necessárias não encontradas!{Style.RESET_ALL}")
